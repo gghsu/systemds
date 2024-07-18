@@ -41,6 +41,8 @@ public class BuiltinRaJoinTest extends AutomatedTestBase
 		addTestConfiguration(TEST_NAME,new TestConfiguration(TEST_CLASS_DIR, TEST_NAME,new String[]{"result"}));
 	}
 
+	// TODO test all join methods
+	
 	@Test
 	public void testRaJoinTest() {
 		//generate actual dataset and variables
