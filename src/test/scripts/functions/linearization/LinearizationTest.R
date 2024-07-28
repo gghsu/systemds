@@ -7,9 +7,9 @@
 # to you under the Apache License, Version 2.0 (the
 # "License"); you may not use this file except in compliance
 # with the License.  You may obtain a copy of the License at
-#
+# 
 #   http://www.apache.org/licenses/LICENSE-2.0
-#
+# 
 # Unless required by applicable law or agreed to in writing,
 # software distributed under the License is distributed on an
 # "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -19,12 +19,18 @@
 #
 #-------------------------------------------------------------
 
-addedX = read($1);
-e = read($2);
 
-# call slice finding
-[TS,TR] = incSliceLine(addedX=addedX, newE=e, k=$3,
-  alpha=0.95, minSup=4, tpEval=$4, selFeat=$5, verbose=$6);
+args <- commandArgs(TRUE)
+options(digits=22)
+library("Matrix")
 
-write(TR, $7)
+A = matrix(1, nrow=10, ncol=2);
+B = matrix(2, nrow=2, ncol=1);
+C = matrix(3, nrow=10, ncol=10);
+D = matrix(4, nrow=10, ncol=10);
+E = matrix(5, nrow=10, ncol=20);
+F = matrix(6, nrow=20, ncol=1);
 
+RESULT = t(A %*% B) %*% C %*% D %*% (E %*% F);
+
+writeMM(as(RESULT, "CsparseMatrix"), paste(args[1], "R", sep=""));

@@ -3309,7 +3309,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock<MatrixBlock>,
 							}
 						}
 					}
-					
+
 				}
 				else //DENSE or SPARSE (!sparsesafe)
 				{
@@ -3322,7 +3322,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock<MatrixBlock>,
 							cor.set(r, c, buffer._correction);
 						}
 				}
-			
+
 				//change representation if required
 				//(note since ak+ on blocks is currently only applied in MR, hence no need to account for this in mem estimates)
 				examSparsity(); 
@@ -3468,7 +3468,7 @@ public class MatrixBlock extends MatrixValue implements CacheBlock<MatrixBlock>,
 						set(r, c, buffer._sum);
 						set(r+1, c, buffer._correction);
 					}
-			}	
+			}
 		}
 		else if(aggOp.correction==CorrectionLocationType.LASTCOLUMN)
 		{
@@ -3667,62 +3667,12 @@ public class MatrixBlock extends MatrixValue implements CacheBlock<MatrixBlock>,
 		else
 			result.reset(tempCellIndex.row, tempCellIndex.column, sps, nonZeros);
 		
-		if( LibMatrixReorg.isSupportedReorgOperator(op) )
-		{
-			//SPECIAL case (operators with special performance requirements, 
-			//or size-dependent special behavior)
-			//currently supported opcodes: r', rdiag, rsort, rev
-			LibMatrixReorg.reorg(this, result, op);
-		}
-		else 
-		{
-			//GENERIC case (any reorg operator)
-			CellIndex temp = new CellIndex(0, 0);
-			if(sparse && sparseBlock != null) {
-				for(int r=0; r<Math.min(rlen, sparseBlock.numRows()); r++) {
-					if(sparseBlock.isEmpty(r)) continue;
-					int apos = sparseBlock.pos(r);
-					int alen = sparseBlock.size(r);
-					int[] aix = sparseBlock.indexes(r);
-					double[] avals = sparseBlock.values(r);
-					for(int i=apos; i<apos+alen; i++) {
-						tempCellIndex.set(r, aix[i]);
-						op.fn.execute(tempCellIndex, temp);
-						result.appendValue(temp.row, temp.column, avals[i]);
-					}
-				}
-			}
-			else if( !sparse && denseBlock != null ) {
-				if( result.isInSparseFormat() ) { //SPARSE<-DENSE
-					DenseBlock a = getDenseBlock();
-					for( int i=0; i<rlen; i++ ) {
-						double[] avals = a.values(i);
-						int aix = a.pos(i);
-						for( int j=0; j<clen; j++ ) {
-							temp.set(i, j);
-							op.fn.execute(temp, temp);
-							result.appendValue(temp.row, temp.column, avals[aix+j]);
-						}
-					}
-				}
-				else { //DENSE<-DENSE
-					result.allocateDenseBlock();
-					DenseBlock a = getDenseBlock();
-					DenseBlock c = result.getDenseBlock();
-					for( int i=0; i<rlen; i++ ) {
-						double[] avals = a.values(i);
-						int aix = a.pos(i);
-						for( int j=0; j<clen; j++ ) {
-							temp.set(i, j);
-							op.fn.execute(temp, temp);
-							c.set(temp.row, temp.column, avals[aix+j]);
-						}
-					}
-					result.nonZeros = nonZeros;
-				}
-			}
-		}
+		if( !LibMatrixReorg.isSupportedReorgOperator(op) )
+			throw new DMLRuntimeException("Unsupported reorg operation: "+op);
 		
+		// core reorg runtime operations
+		LibMatrixReorg.reorg(this, result, op);
+	
 		return result;
 	}
 
@@ -4600,13 +4550,12 @@ public class MatrixBlock extends MatrixValue implements CacheBlock<MatrixBlock>,
 	}
 
 	@Override
-	public MatrixBlock zeroOutOperations(MatrixValue result, IndexRange range, boolean complementary) {
+	public MatrixBlock zeroOutOperations(MatrixValue result, IndexRange range) {
 		checkType(result);
 		double currentSparsity=(double)nonZeros/rlen/clen;
 		double estimatedSps=currentSparsity*(range.rowEnd-range.rowStart+1)
 			*(range.colEnd-range.colStart+1)/rlen/clen;
-		if(!complementary)
-			estimatedSps=currentSparsity-estimatedSps;
+		estimatedSps = currentSparsity-estimatedSps;
 		
 		boolean lsparse = evalSparseFormatInMemory(rlen, clen, (long)(estimatedSps*rlen*clen));
 		
@@ -4620,13 +4569,11 @@ public class MatrixBlock extends MatrixValue implements CacheBlock<MatrixBlock>,
 		{
 			if(sparseBlock!=null)
 			{
-				if(!complementary)//if zero out
-				{
-					for(int r=0; r<Math.min((int)range.rowStart, sparseBlock.numRows()); r++)
-						((MatrixBlock) result).appendRow(r, sparseBlock.get(r));
-					for(int r=Math.min((int)range.rowEnd+1, sparseBlock.numRows()); r<Math.min(rlen, sparseBlock.numRows()); r++)
-						((MatrixBlock) result).appendRow(r, sparseBlock.get(r));
-				}
+				for(int r=0; r<Math.min((int)range.rowStart, sparseBlock.numRows()); r++)
+					((MatrixBlock) result).appendRow(r, sparseBlock.get(r));
+				for(int r=Math.min((int)range.rowEnd+1, sparseBlock.numRows()); r<Math.min(rlen, sparseBlock.numRows()); r++)
+					((MatrixBlock) result).appendRow(r, sparseBlock.get(r));
+				
 				for(int r=(int)range.rowStart; r<=Math.min(range.rowEnd, sparseBlock.numRows()-1); r++)
 				{
 					if(sparseBlock.isEmpty(r)) 
@@ -4634,35 +4581,21 @@ public class MatrixBlock extends MatrixValue implements CacheBlock<MatrixBlock>,
 					int[] cols=sparseBlock.indexes(r);
 					double[] values=sparseBlock.values(r);
 					
-					if(complementary)//if selection
+					
+					int pos = sparseBlock.pos(r);
+					int len = sparseBlock.size(r);
+					int start=sparseBlock.posFIndexGTE(r,(int)range.colStart);
+					if(start<0) start=pos+len;
+					int end=sparseBlock.posFIndexGT(r,(int)range.colEnd);
+					if(end<0) end=pos+len;
+					
+					for(int i=pos; i<start; i++)
 					{
-						int start=sparseBlock.posFIndexGTE(r,(int)range.colStart);
-						if(start<0) continue;
-						int end=sparseBlock.posFIndexGT(r,(int)range.colEnd);
-						if(end<0 || start>end) 
-							continue;
-						
-						for(int i=start; i<end; i++)
-						{
-							((MatrixBlock) result).appendValue(r, cols[i], values[i]);
-						}
-					}else
+						((MatrixBlock) result).appendValue(r, cols[i], values[i]);
+					}
+					for(int i=end; i<pos+len; i++)
 					{
-						int pos = sparseBlock.pos(r);
-						int len = sparseBlock.size(r);
-						int start=sparseBlock.posFIndexGTE(r,(int)range.colStart);
-						if(start<0) start=pos+len;
-						int end=sparseBlock.posFIndexGT(r,(int)range.colEnd);
-						if(end<0) end=pos+len;
-						
-						for(int i=pos; i<start; i++)
-						{
-							((MatrixBlock) result).appendValue(r, cols[i], values[i]);
-						}
-						for(int i=end; i<pos+len; i++)
-						{
-							((MatrixBlock) result).appendValue(r, cols[i], values[i]);
-						}
+						((MatrixBlock) result).appendValue(r, cols[i], values[i]);
 					}
 				}
 			}
@@ -4671,37 +4604,25 @@ public class MatrixBlock extends MatrixValue implements CacheBlock<MatrixBlock>,
 			if(denseBlock!=null)
 			{
 				double[] a = getDenseBlockValues();
-				if(complementary)//if selection
+				
+				int offset=0;
+				int r=0;
+				for(; r<(int)range.rowStart; r++)
+					for(int c=0; c<clen; c++, offset++)
+						((MatrixBlock) result).appendValue(r, c, a[offset]);
+				
+				for(; r<=(int)range.rowEnd; r++)
 				{
-					int offset=((int)range.rowStart)*clen;
-					for(int r=(int) range.rowStart; r<=range.rowEnd; r++)
-					{
-						for(int c=(int) range.colStart; c<=range.colEnd; c++)
-							((MatrixBlock) result).appendValue(r, c, a[offset+c]);
-						offset+=clen;
-					}
-				}else
-				{
-					int offset=0;
-					int r=0;
-					for(; r<(int)range.rowStart; r++)
-						for(int c=0; c<clen; c++, offset++)
-							((MatrixBlock) result).appendValue(r, c, a[offset]);
-					
-					for(; r<=(int)range.rowEnd; r++)
-					{
-						for(int c=0; c<(int)range.colStart; c++)
-							((MatrixBlock) result).appendValue(r, c, a[offset+c]);
-						for(int c=(int)range.colEnd+1; c<clen; c++)
-							((MatrixBlock) result).appendValue(r, c, a[offset+c]);
-						offset+=clen;
-					}
-					
-					for(; r<rlen; r++)
-						for(int c=0; c<clen; c++, offset++)
-							((MatrixBlock) result).appendValue(r, c, a[offset]);
+					for(int c=0; c<(int)range.colStart; c++)
+						((MatrixBlock) result).appendValue(r, c, a[offset+c]);
+					for(int c=(int)range.colEnd+1; c<clen; c++)
+						((MatrixBlock) result).appendValue(r, c, a[offset+c]);
+					offset+=clen;
 				}
 				
+				for(; r<rlen; r++)
+					for(int c=0; c<clen; c++, offset++)
+						((MatrixBlock) result).appendValue(r, c, a[offset]);
 			}
 		}
 		return (MatrixBlock)result;
@@ -5793,39 +5714,6 @@ public class MatrixBlock extends MatrixValue implements CacheBlock<MatrixBlock>,
 	 */
 	public static boolean isThreadSafe(boolean sparse) {
 		return !sparse || DEFAULT_SPARSEBLOCK == SparseBlock.Type.MCSR; //only MCSR thread-safe	
-	} 
-	
-	/**
-	 * Checks for existing NaN values in the matrix block.
-	 * @throws DMLRuntimeException if the blocks contains at least one NaN.
-	 */
-	public void checkNaN() {
-		if( isEmptyBlock(false) )
-			return;
-		if( sparse ) {
-			SparseBlock sblock = sparseBlock;
-			for(int i=0; i<rlen; i++) {
-				if( sblock.isEmpty(i) ) continue;
-				int alen = sblock.size(i);
-				int apos = sblock.pos(i);
-				int[] aix = sblock.indexes(i);
-				double[] avals = sblock.values(i);
-				for(int k=apos; k<apos+alen; k++) {
-					if( Double.isNaN(avals[k]) )
-						throw new DMLRuntimeException("NaN encountered at position ["+i+","+aix[k]+"].");
-				}
-			}
-		}
-		else {
-			DenseBlock dblock = denseBlock;
-			for(int i=0; i<rlen; i++) {
-				int aix = dblock.pos(i);
-				double[] avals = dblock.values(i);
-				for(int j=0; j<clen; j++)
-					if( Double.isNaN(avals[aix+j]) )
-						throw new DMLRuntimeException("NaN encountered at position ["+i+","+j+"].");
-			}
-		}
 	}
 	
 	@Override
